@@ -265,6 +265,13 @@ def infer(
     ):
         perform_drift_analysis = True
     if perform_drift_analysis:
+        # `record_results` was removed from `mlrun.model_monitoring.api` in mlrun 1.12.0.
+        if not hasattr(mlrun.model_monitoring.api, "record_results"):
+            raise mlrun.errors.MLRunInvalidArgumentError(
+                "Drift analysis via `batch_inference_v2` is not supported with mlrun>=1.12.0, "
+                "where `mlrun.model_monitoring.api.record_results` was removed. "
+                "To monitor a model on mlrun>=1.12.0, run a monitored serving function as a job."
+            )
         context.logger.info("Performing drift analysis...")
         # Get the sample set statistics (either from the sample set or from the statistics logged with the model)
         statistics_input_filtered = _get_sample_set_statistics_parameters(

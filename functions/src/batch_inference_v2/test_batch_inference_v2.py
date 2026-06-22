@@ -31,7 +31,14 @@ import mlrun
 import mlrun.common.schemas
 from batch_inference_v2 import infer
 import shutil
-from mlrun.model_monitoring.api import get_or_create_model_endpoint
+
+
+def _record_results_supported() -> bool:
+    # `record_results` was removed from `mlrun.model_monitoring.api` in mlrun 1.12.0 (ML-12782).
+    import mlrun.model_monitoring.api
+    return hasattr(mlrun.model_monitoring.api, "record_results")
+
+
 REQUIRED_ENV_VARS = [
     "MLRUN_DBPATH",
     "V3IO_USERNAME",
@@ -92,6 +99,8 @@ def assert_batch_predict(n_features, batch_inference_run, with_monitoring=False,
     assert len(batch_inference_run.status.artifacts) == 1
     assert len(batch_inference_run.artifact("prediction").as_df().columns) == n_features + 1
     if with_monitoring:
+        from mlrun.model_monitoring.api import get_or_create_model_endpoint
+
         # Check that the drift analysis was performed:
         time.sleep(60)
         # Retrieve the model endpoint
@@ -154,6 +163,11 @@ def test_batch_predict():
 
     # Check the logged results:
     assert_batch_predict(n_features=n_features, batch_inference_run=batch_inference_run)
+
+    if not _record_results_supported():
+        # The legacy batch drift-analysis flow is unsupported on mlrun>=1.12 (ML-12782).
+        _delete_project(project=project.metadata.name)
+        return
 
     # Enable model monitoring
     project.set_model_monitoring_credentials(
@@ -234,14 +248,24 @@ class TestBatchInferUnitTests:
 
         sample = self._get_model_endpoint_sample_set(
             sample_type=sample_type, n_features=n_features)
-        infer(context=self.context,
-              dataset=dataset.to_dataitem().as_df(), model_path=model.uri,
-              model_endpoint_sample_set=sample,
-              feature_columns=list(model_endpoint_sample_set.to_dataitem().as_df().columns),
-              label_columns="target_label",
-              model_endpoint_name=f"model-endpoint-name-{uuid.uuid4()}",
-              trigger_monitoring_job=True,
-              perform_drift_analysis=True)
+        infer_kwargs = dict(
+            context=self.context,
+            dataset=dataset.to_dataitem().as_df(), model_path=model.uri,
+            model_endpoint_sample_set=sample,
+            feature_columns=list(model_endpoint_sample_set.to_dataitem().as_df().columns),
+            label_columns="target_label",
+            model_endpoint_name=f"model-endpoint-name-{uuid.uuid4()}",
+            trigger_monitoring_job=True,
+            perform_drift_analysis=True)
+        if not _record_results_supported():
+            # Drift analysis via batch_inference_v2 is unsupported on mlrun>=1.12 (ML-12782).
+            with pytest.raises(
+                mlrun.errors.MLRunInvalidArgumentError,
+                match="not supported with mlrun>=1.12",
+            ):
+                infer(**infer_kwargs)
+            return
+        infer(**infer_kwargs)
         #  a workaround until ML-4636 will be solved.
         batch_inference_run = self.project.list_runs(name=self.context.name).to_objects()[0]
         mlrun.get_run_db().update_run(updates={"status.state": "completed"}, uid=batch_inference_run.uid())
